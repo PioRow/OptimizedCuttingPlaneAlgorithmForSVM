@@ -23,36 +23,89 @@ class OCPSVM:
         self.betas=np.array([beta])
         self.W=w_c
         self.ws_best=w_c
+        #TODO: lucky guess on result
 
-    def _create_hyperplane(self, X, y, w_c):
-        dot_prods = np.dot(X, w_c).reshape(-1,)
+    def _create_hyperplane(self, X, y, w_c,dot_prods=None):
+        if dot_prods is None:
+            dot_prods = np.dot(X, w_c).reshape(-1,)
         cond=np.where(dot_prods*y<=1,1,0)
         S=(X.T*y*cond).T
         alpha=-np.mean(S, axis=0)
 
         beta=self._risk(dot_prods, y) -np.dot(alpha,w_c)
         return alpha, beta
+
     def _risk(self,dot_prods,y):
         comp=np.where(dot_prods*y<1,1-dot_prods*y,0)
         return np.mean(comp)
 
-    def _line_search(self,w):
+    def _line_search(self,w,X,y):
         w_prev=self.ws_best[:,-1]
-        print(w_prev.shape)
+
+
         A_oh=np.linalg.norm(w-w_prev,2)**2
         B_oh=np.dot(w_prev,w-w_prev)
-        C_oh=0.5*np.linalg.norm(w_prev,2)**2
 
-        return np.zeros(self.M)
+        prev_dots= np.dot(X, w_prev)
+        dots=np.dot(X, w)
 
+        Bs=y*self.C*(prev_dots-dots)
+        Cs=self.C*(1-prev_dots)
+        Ks=-Cs/(Bs+1e-10)
+
+        cond1=(Bs> 0) & (Ks <= 0)
+        cond2=(Bs<0)& (Ks > 0)
+        cond= (cond1 | cond2)
+        max=B_oh+np.sum(Bs*cond)
+        if max>0:
+            return w_prev,prev_dots
+
+
+        idx=np.argsort(Ks)
+        Ks=Ks[idx]
+        Bs= Bs[idx]
+        Cs= Cs[idx]
+        consts=Ks*A_oh+B_oh
+        tmp1=Bs.reshape(-1,1)
+        tmp2=Ks.reshape(-1,1)
+        Mat=(((tmp2@tmp1.T+Cs)>0)*Bs).T
+        subdiff=np.sum(Mat,axis=1)
+        grads=consts+subdiff
+        k=0
+        for i in range(len(grads)-1):
+            if np.abs(grads[i])<1e-9:
+                k=Ks[i]
+                break
+            if grads[i]*grads[i+1]<0:
+                tmp=-(subdiff[i]+B_oh)/A_oh
+                if Ks[i] < tmp < Ks[i + 1]:
+                    k=tmp
+                    break
+        w_b= w_prev + k * (w - w_prev)
+        dots_b=prev_dots+k*(dots-prev_dots)
+        w_c=self.lamb*w_b+ (1-self.lamb)*w_prev
+        dots_c=self.lamb*dots_b + (1-self.lamb)*dots
+        self.ws_best = np.hstack((self.ws_best, w_b.reshape(-1, 1)))
+        return w_c,dots_c
+
+
+    def _objective_function(self, w, X, y):
+        dot_prods = np.dot(X, w).reshape(-1,)
+        risk = self._risk(dot_prods, y)
+        return 0.5 * np.linalg.norm(w) ** 2 + self.C * risk
+    def _sub_objective(self,w,X,y):
+        pass
     def fit(self, X, y):
         self.N, self.M = X.shape
         self._init_loop(X, y)
         for i in range(1,self.max_iter):
             w,xi=reduced_problem_solver(self.alphas, self.betas, self.C, self.M)
-            w_b=self._line_search()
-            w_c=self.lamb*w_b+(1-self.lamb)*w
-            break;
+            w_c,dots=self._line_search(w,X,y)
+            self.W=w_c
+            alpha, beta = self._create_hyperplane(X, y, w_c)
+            self.alphas = np.hstack((self.alphas, alpha.reshape(-1, 1)))
+            self.betas=np.append(self.betas, beta)
+
 
     def predict(self,X):
         return np.sign(np.dot(X, self.W))
