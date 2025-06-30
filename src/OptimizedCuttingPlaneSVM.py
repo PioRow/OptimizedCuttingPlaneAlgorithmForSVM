@@ -1,7 +1,10 @@
 import numpy as np
+from debugpy.common.log import warning
+from sklearn.metrics import accuracy_score
+from sklearn.base import BaseEstimator, ClassifierMixin
 from .utils import reduced_problem_solver
-import torch
-class OCPSVM:
+# Optimized Cutting Plane SVM
+class OCPSVM(BaseEstimator,ClassifierMixin):
     def __init__(self,tol=1e-7, max_iter=1000, C=1.0,lamb=0.1,verbose=False):
         self.tol = tol
         self.max_iter = max_iter
@@ -40,6 +43,7 @@ class OCPSVM:
         return np.mean(comp)
 
     def _line_search(self,w,X,y):
+        # TODO need revision
         w_prev=self.ws_best[:,-1]
 
 
@@ -52,12 +56,12 @@ class OCPSVM:
         Bs=y*self.C*(prev_dots-dots)
         Cs=self.C*(1-prev_dots)
         Ks=-Cs/(Bs+1e-10)
-
         cond1=(Bs> 0) & (Ks <= 0)
         cond2=(Bs<0)& (Ks > 0)
         cond= (cond1 | cond2)
         max=B_oh+np.sum(Bs*cond)
         if max>0:
+            k=0
             return w_prev,prev_dots
 
 
@@ -71,14 +75,23 @@ class OCPSVM:
         Mat=(((tmp2@tmp1.T+Cs)>0)*Bs).T
         subdiff=np.sum(Mat,axis=1)
         grads=consts+subdiff
-        k=0
-        for i in range(len(grads)-1):
+        k = Ks[-1]
+
+        def _eval_for_k(k_0):
+            c=(k_0*Bs+Cs>0)*Bs
+            constr=np.sum(c)
+            const=A_oh*k_0+B_oh
+            val= const + constr
+            return val
+        for i,j in zip(range(len(Ks)-1), range(1, len(Ks))):
+            if Ks[j]<0:
+                continue
             if np.abs(grads[i])<1e-9:
                 k=Ks[i]
                 break
-            if grads[i]*grads[i+1]<0:
+            if grads[i]*grads[j]<0:
                 tmp=-(subdiff[i]+B_oh)/A_oh
-                if Ks[i] < tmp < Ks[i + 1]:
+                if Ks[i] < tmp < Ks[j] and tmp>0:
                     k=tmp
                     break
         w_b= w_prev + k * (w - w_prev)
@@ -89,12 +102,15 @@ class OCPSVM:
         return w_c,dots_c
 
 
-    def _objective_function(self, w, X, y):
-        dot_prods = np.dot(X, w).reshape(-1,)
-        risk = self._risk(dot_prods, y)
+    def _objective_function(self, w, dots, y):
+
+        risk = self._risk(dots, y)
         return 0.5 * np.linalg.norm(w) ** 2 + self.C * risk
-    def _sub_objective(self,w,X,y):
-        pass
+    def _sub_objective(self,w):
+        dot_prods=np.dot(self.alphas.T,w).reshape(-1,)+ self.betas
+        r_t=np.max(dot_prods)
+        r= max(r_t,0)
+        return 0.5 * np.linalg.norm(w) ** 2+self.C*r
     def fit(self, X, y):
         self.N, self.M = X.shape
         self._init_loop(X, y)
@@ -105,9 +121,24 @@ class OCPSVM:
             alpha, beta = self._create_hyperplane(X, y, w_c)
             self.alphas = np.hstack((self.alphas, alpha.reshape(-1, 1)))
             self.betas=np.append(self.betas, beta)
+            obj=self._objective_function(w_c,dots,y)
+            sub_obj=self._sub_objective(w_c)
+            if self.verbose:
+                print(f"Iteration {i}: Objective = {obj}, Sub-Objective = {sub_obj}")
 
+            if obj-sub_obj<self.tol:
+                if self.verbose:
+                    print(f"Convergence reached at iteration {i}.")
+                self.is_fitted_=True
+                return self
+        warning(f"Maximum iterations {self.max_iter} reached without convergence.")
+        self.is_fitted_=False
+        return self
 
     def predict(self,X):
         return np.sign(np.dot(X, self.W))
+    def score(self, X, y,score_fun=accuracy_score):
+        predictions = self.predict(X)
+        return score_fun(y, predictions)
 
 
