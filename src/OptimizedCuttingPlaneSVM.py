@@ -42,7 +42,7 @@ class OCPSVM(BaseEstimator,ClassifierMixin):
         comp=np.where(dot_prods*y<1,1-dot_prods*y,0)
         return np.mean(comp)
 
-    def _line_search(self,w,X,y):
+    def _line_search(self,w,X,y,dots):
         w_prev=self.ws_best[:,-1]
 
 
@@ -50,7 +50,7 @@ class OCPSVM(BaseEstimator,ClassifierMixin):
         B_oh=np.dot(w_prev,w-w_prev)
 
         prev_dots= np.dot(X, w_prev)
-        dots=np.dot(X, w)
+
 
         Bs=y*self.C*(prev_dots-dots)
         Cs=self.C*(1-prev_dots)
@@ -61,7 +61,7 @@ class OCPSVM(BaseEstimator,ClassifierMixin):
         max=B_oh+np.sum(Bs*cond)
         if max>0:
             k=0
-            return w_prev,prev_dots
+            return w_prev,prev_dots,True
 
 
         idx=np.argsort(Ks)
@@ -75,13 +75,6 @@ class OCPSVM(BaseEstimator,ClassifierMixin):
         subdiff=np.sum(Mat,axis=1)
         grads=consts+subdiff
         k = Ks[-1]
-
-        def _eval_for_k(k_0):
-            c=(k_0*Bs+Cs>0)*Bs
-            constr=np.sum(c)
-            const=A_oh*k_0+B_oh
-            val= const + constr
-            return val
         for i,j in zip(range(len(Ks)-1), range(1, len(Ks))):
             if Ks[j]<0:
                 continue
@@ -95,10 +88,8 @@ class OCPSVM(BaseEstimator,ClassifierMixin):
                     break
         w_b= w_prev + k * (w - w_prev)
         dots_b=prev_dots+k*(dots-prev_dots)
-        w_c=self.lamb*w_b+ (1-self.lamb)*w_prev
-        dots_c=self.lamb*dots_b + (1-self.lamb)*dots
         self.ws_best = np.hstack((self.ws_best, w_b.reshape(-1, 1)))
-        return w_c,dots_c
+        return w_b,dots_b,False
 
 
     def _objective_function(self, w, dots, y):
@@ -110,18 +101,28 @@ class OCPSVM(BaseEstimator,ClassifierMixin):
         r_t=np.max(dot_prods)
         r= max(r_t,0)
         return 0.5 * np.linalg.norm(w) ** 2+self.C*r
+
+
     def fit(self, X, y):
         self.N, self.M = X.shape
         self._init_loop(X, y)
         for i in range(1,self.max_iter):
             w,xi=reduced_problem_solver(self.alphas, self.betas, self.C, self.M)
-            w_c,dots=self._line_search(w,X,y)
-            self.W=w_c
+            dots_i = np.dot(X, w)
+            w_b,dots_b,should_term=self._line_search(w,X,y,dots_i)
+            if should_term:
+                if self.verbose:
+                    print(f"Line search terminated early at iteration {i}.")
+                self.is_fitted_=True
+                return self
+            self.W= w_b
+            w_c,dots=w_b*(1-self.lamb)+self.lamb*w,dots_b*(1-self.lamb)+ self.lamb*dots_i
+
             alpha, beta = self._create_hyperplane(X, y, w_c)
             self.alphas = np.hstack((self.alphas, alpha.reshape(-1, 1)))
             self.betas=np.append(self.betas, beta)
-            obj=self._objective_function(w_c,dots,y)
-            sub_obj=self._sub_objective(w_c)
+            obj=self._objective_function(w_b,dots_b,y)
+            sub_obj=self._sub_objective(w)
             if self.verbose:
                 print(f"Iteration {i}: Objective = {obj}, Sub-Objective = {sub_obj}")
 
