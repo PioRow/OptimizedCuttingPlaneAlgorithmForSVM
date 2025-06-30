@@ -43,7 +43,6 @@ class OCPSVM(BaseEstimator,ClassifierMixin):
         return np.mean(comp)
 
     def _line_search(self,w,X,y):
-        # TODO need revision
         w_prev=self.ws_best[:,-1]
 
 
